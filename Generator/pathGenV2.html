@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FTC OdoEngine Path Generator</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; background: #1a1a1b; color: white; margin: 20px; }
+        canvas {
+            background-color: #2d2d2e;
+            /* Use local field image file */
+            background-image: url('field.png');
+            background-position: center;
+            background-size: cover;
+            border: 4px solid #3d3d3e;
+            cursor: crosshair;
+            border-radius: 4px;
+        }
+        .controls { margin: 20px; padding: 20px; background: #2d2d2e; border-radius: 12px; width: 900px; }
+        textarea { width: 100%; height: 200px; font-family: 'Consolas', monospace; margin-top: 10px; border: 1px solid #444; background: #1a1a1b; color: #10b981; padding: 10px; border-radius: 4px; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+        button { padding: 10px 20px; font-weight: bold; cursor: pointer; border: none; border-radius: 6px; }
+        .btn-clear { background: #ef4444; color: white; }
+        .btn-copy { background: #4f46e5; color: white; }
+        .segment-controls { display: flex; gap: 8px; align-items: center; background: #1a1a1b; padding: 8px 12px; border-radius: 6px; border: 1px solid #444; }
+        .segment-controls label { font-size: 12px; color: #cbd5e1; }
+        .segment-controls select, .segment-controls input { padding: 6px; border-radius: 4px; border: 1px solid #444; background: #0f172a; color: #fff; font-size: 12px; }
+        .legend { margin-top: 12px; font-size: 12px; color: #94a3b8; }
+        .legend span { margin-right: 20px; }
+    </style>
+</head>
+<body>
+    <h2>PID Engine Path Generator</h2>
+    <canvas id="field" width="600" height="600"></canvas>
+
+    <div class="controls">
+        <div class="toolbar">
+            <button class="btn-clear" onclick="clearPath()">Clear Path</button>
+            <button onclick="toggleSetStart()">Set Start</button>
+            <button onclick="toggleAddAction()">Add Action</button>
+            <button onclick="simulate()">Simulate</button>
+            <button class="btn-copy" onclick="copyCode()">Copy Java Code</button>
+        </div>
+        <div class="segment-controls">
+            <label>Selected Segment Type:</label>
+            <select id="segmentType">
+                <option value="drive">Drive (Blue)</option>
+                <option value="strafe">Strafe (Yellow)</option>
+                <option value="arc">Arc (Cyan)</option>
+            </select>
+            <label style="margin-left: 16px;">Arc Speed:</label>
+            <input id="arcSpeed" type="number" value="0.8" step="0.1" min="0.1" max="2.0" style="width: 60px;">
+        </div>
+        <div class="legend">
+            <span style="color: #3b82f6;">█ Blue: drivePID</span>
+            <span style="color: #eab308;">█ Yellow: strafePID</span>
+            <span style="color: #06b6d4;">█ Cyan: arc()</span>
+        </div>
+        <textarea id="output" readonly></textarea>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('field');
+        const ctx = canvas.getContext('2d');
+        const output = document.getElementById('output');
+        const fieldMeters = 3.6576; // FTC field dimension in meters
+        let ppm = canvas.width / fieldMeters;
+        let drawX = 0, drawY = 0, drawW = canvas.width, drawH = canvas.height;
+
+        // helpers
+        function radToDeg(r) { return r * 180 / Math.PI; }
+        function degToRad(d) { return d * Math.PI / 180; }
+        function wrapDeg(d) { while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+
+        // load field image
+        const fieldImg = new Image();
+        fieldImg.src = 'field.png';
+        fieldImg.onload = () => {
+            const scale = Math.min(canvas.width / fieldImg.width, canvas.height / fieldImg.height);
+            drawW = fieldImg.width * scale;
+            drawH = fieldImg.height * scale;
+            drawX = (canvas.width - drawW) / 2;
+            drawY = (canvas.height - drawH) / 2;
+            ppm = drawW / fieldMeters;
+            draw();
+        };
+
+        let waypoints = [];
+        let markers = [];
+        let nextMarkerId = 1;
+        let start = { x: 0, y: 0, h: 0 };
+        let draggingIdx = -1;
+        let draggingHIdx = -1;
+        let setStartMode = false;
+        let addActionMode = false;
+        let isSimulating = false;
+        let selectedSegmentIdx = null; // index of segment being configured
+
+        function toPixels(mx, my) {
+            return {
+                x: drawX + (mx + fieldMeters/2) * ppm,
+                y: drawY + drawH - (my + fieldMeters/2) * ppm
+            };
+        }
+
+        function toMeters(px, py) {
+            return {
+                x: ((px - drawX) / ppm) - (fieldMeters / 2),
+                y: ((drawY + drawH - py) / ppm) - (fieldMeters / 2)
+            };
+        }
+
+        const btnAddAction = document.querySelector('button[onclick="toggleAddAction()"]');
+        const segmentTypeSelect = document.getElementById('segmentType');
+        const arcSpeedInput = document.getElementById('arcSpeed');
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+            const m = toMeters(px, py);
+
+            // test hit on start
+            const startPos = toPixels(start.x, start.y);
+            const ds = Math.hypot(px - startPos.x, py - startPos.y);
+            if (ds < 10) { draggingIdx = -2; return; }
+
+            // test hit on waypoint circles
+            for (let i = 0; i < waypoints.length; i++) {
+                const pos = toPixels(waypoints[i].x, waypoints[i].y);
+                if (Math.hypot(px - pos.x, py - pos.y) < 10) {
+                    selectedSegmentIdx = i;
+                    if (waypoints[i].segmentType) segmentTypeSelect.value = waypoints[i].segmentType;
+                    if (waypoints[i].arcSpeed) arcSpeedInput.value = waypoints[i].arcSpeed;
+                    draggingIdx = i;
+                    return;
+                }
+                // rotation handle hit
+                const hpos = handlePosPixels(waypoints[i]);
+                if (Math.hypot(px - hpos.x, py - hpos.y) < 10) { draggingHIdx = i; return; }
+            }
+
+            // test start rotation handle
+            const sh = startHandlePosPixels();
+            if (Math.hypot(px - sh.x, py - sh.y) < 10) { draggingHIdx = -2; return; }
+
+            if (setStartMode) {
+                start = { x: m.x, y: m.y, h: 0 };
+                setStartMode = false;
+                draw(); generateCode();
+                return;
+            }
+
+            // If clicked on an existing marker, append it as an action node
+            for (let i = 0; i < markers.length; i++) {
+                const mp = toPixels(markers[i].x, markers[i].y);
+                if (Math.hypot(px - mp.x, py - mp.y) < 10) {
+                    let insertAt = waypoints.length;
+                    for (let j = waypoints.length - 1; j >= 0; j--) {
+                        if (!waypoints[j].isAction) { insertAt = j + 1; break; }
+                    }
+                    waypoints.splice(insertAt, 0, { x: markers[i].x, y: markers[i].y, h: 0, isAction: true, actionId: markers[i].id });
+                    draw(); generateCode();
+                    return;
+                }
+            }
+
+            if (addActionMode) {
+                const name = prompt('Action name (function in AutoEngine):', 'customAction');
+                if (name === null || name.trim() === '') { addActionMode = false; draw(); return; }
+                const args = prompt('Arguments (comma separated, optional):', '');
+
+                let found = null;
+                for (let i = 0; i < markers.length; i++) {
+                    const d = Math.hypot(markers[i].x - m.x, markers[i].y - m.y);
+                    if (d < (5 / ppm) && markers[i].name === name.trim()) { found = markers[i]; break; }
+                }
+
+                if (found) {
+                    let insertAt = waypoints.length;
+                    for (let j = waypoints.length - 1; j >= 0; j--) {
+                        if (!waypoints[j].isAction) { insertAt = j + 1; break; }
+                    }
+                    waypoints.splice(insertAt, 0, { x: found.x, y: found.y, h: 0, isAction: true, actionId: found.id });
+                } else {
+                    const id = nextMarkerId++;
+                    const marker = { id: id, x: m.x, y: m.y, name: name.trim(), args: args ? args.trim() : '' };
+                    markers.push(marker);
+                    let insertAt = waypoints.length;
+                    for (let j = waypoints.length - 1; j >= 0; j--) {
+                        if (!waypoints[j].isAction) { insertAt = j + 1; break; }
+                    }
+                    waypoints.splice(insertAt, 0, { x: m.x, y: m.y, h: 0, isAction: true, actionId: id });
+                }
+
+                addActionMode = false;
+                draw(); generateCode();
+                return;
+            }
+
+            // otherwise add waypoint with default segment type
+            waypoints.push({ x: m.x, y: m.y, h: 0, segmentType: 'drive', arcSpeed: 0.8 });
+            selectedSegmentIdx = waypoints.length - 1;
+            segmentTypeSelect.value = 'drive';
+            arcSpeedInput.value = 0.8;
+            draw();
+            generateCode();
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+            let hoveringMarker = false;
+            for (let i = 0; i < markers.length; i++) {
+                const mp = toPixels(markers[i].x, markers[i].y);
+                if (Math.hypot(px - mp.x, py - mp.y) < 10) { hoveringMarker = true; break; }
+            }
+            if (hoveringMarker) canvas.style.cursor = addActionMode ? 'copy' : 'pointer';
+            else canvas.style.cursor = 'crosshair';
+
+            if (draggingIdx === -1 && draggingHIdx === -1) return;
+            const m = toMeters(px, py);
+            if (draggingIdx >= 0) {
+                waypoints[draggingIdx].x = m.x;
+                waypoints[draggingIdx].y = m.y;
+                draw(); generateCode();
+            } else if (draggingIdx === -2) {
+                start.x = m.x; start.y = m.y; draw(); generateCode();
+            } else if (draggingHIdx >= 0) {
+                const pos = toPixels(waypoints[draggingHIdx].x, waypoints[draggingHIdx].y);
+                waypoints[draggingHIdx].h = Math.atan2(py - pos.y, px - pos.x);
+                draw(); generateCode();
+            } else if (draggingHIdx === -2) {
+                const pos = toPixels(start.x, start.y);
+                start.h = Math.atan2(py - pos.y, px - pos.x);
+                draw(); generateCode();
+            }
+        });
+
+        window.addEventListener('mouseup', () => { draggingIdx = -1; draggingHIdx = -1; });
+
+        // Update selected segment when dropdown changes
+        segmentTypeSelect.addEventListener('change', () => {
+            if (selectedSegmentIdx !== null && waypoints[selectedSegmentIdx]) {
+                waypoints[selectedSegmentIdx].segmentType = segmentTypeSelect.value;
+                draw(); generateCode();
+            }
+        });
+
+        arcSpeedInput.addEventListener('change', () => {
+            if (selectedSegmentIdx !== null && waypoints[selectedSegmentIdx]) {
+                waypoints[selectedSegmentIdx].arcSpeed = parseFloat(arcSpeedInput.value);
+                generateCode();
+            }
+        });
+
+        function handlePosPixels(p) {
+            const pos = toPixels(p.x, p.y);
+            const r = 18;
+            return { x: pos.x + Math.cos(p.h) * r, y: pos.y + Math.sin(p.h) * r };
+        }
+
+        function startHandlePosPixels() {
+            const pos = toPixels(start.x, start.y);
+            const r = 18;
+            return { x: pos.x + Math.cos(start.h) * r, y: pos.y + Math.sin(start.h) * r };
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (fieldImg.complete && drawW > 0 && drawH > 0) {
+                ctx.drawImage(fieldImg, drawX, drawY, drawW, drawH);
+            }
+
+            const spos = toPixels(start.x, start.y);
+            ctx.fillStyle = "#10b981";
+            ctx.beginPath(); ctx.arc(spos.x, spos.y, 8, 0, Math.PI * 2); ctx.fill();
+            const sh = startHandlePosPixels();
+            ctx.strokeStyle = '#10b981'; ctx.beginPath(); ctx.moveTo(spos.x, spos.y); ctx.lineTo(sh.x, sh.y); ctx.stroke();
+            ctx.fillStyle = '#065f46'; ctx.beginPath(); ctx.arc(sh.x, sh.y, 6, 0, Math.PI*2); ctx.fill();
+
+            if (waypoints.length > 0) {
+                const first = toPixels(waypoints[0].x, waypoints[0].y);
+                ctx.strokeStyle = "#6366f1";
+                ctx.beginPath(); ctx.moveTo(spos.x, spos.y); ctx.lineTo(first.x, first.y); ctx.stroke();
+            }
+
+            waypoints.forEach((p, i) => {
+                const pos = toPixels(p.x, p.y);
+
+                // Highlight selected waypoint
+                if (i === selectedSegmentIdx) {
+                    ctx.fillStyle = 'rgba(16, 185, 129, 0.3)';
+                    ctx.beginPath(); ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2); ctx.fill();
+                }
+
+                if (p.isAction) {
+                    ctx.fillStyle = '#a78bfa';
+                    ctx.beginPath();
+                    ctx.moveTo(pos.x, pos.y - 7);
+                    ctx.lineTo(pos.x + 7, pos.y);
+                    ctx.lineTo(pos.x, pos.y + 7);
+                    ctx.lineTo(pos.x - 7, pos.y);
+                    ctx.closePath(); ctx.fill();
+                    const m = markers.find(x => x.id === p.actionId);
+                    if (m) {
+                        ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.fillText(m.name, pos.x + 10, pos.y + 3);
+                    }
+                } else {
+                    // Draw colored circles based on segment type
+                    const color = p.segmentType === 'strafe' ? '#eab308' : (p.segmentType === 'arc' ? '#06b6d4' : '#3b82f6');
+                    ctx.fillStyle = color;
+                    ctx.beginPath(); ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2); ctx.fill();
+                }
+
+                const prev = (i === 0) ? toPixels(start.x, start.y) : toPixels(waypoints[i-1].x, waypoints[i-1].y);
+                const color = p.segmentType === 'strafe' ? '#eab308' : (p.segmentType === 'arc' ? '#06b6d4' : '#3b82f6');
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+
+                if (p.segmentType === 'arc') {
+                    // Draw arc curve
+                    const prevWp = (i === 0) ? start : waypoints[i-1];
+                    const dx = p.x - prevWp.x;
+                    const dy = p.y - prevWp.y;
+                    const dist = Math.hypot(dx, dy);
+                    const segAngle = Math.atan2(dy, dx);
+                    const startHeading = (i === 0) ? start.h : waypoints[i-1].h;
+                    const endHeading = p.h;
+
+                    if (dist > 0.05) {
+                        // Draw bezier arc approximation
+                        const midX = (prev.x + pos.x) / 2;
+                        const midY = (prev.y + pos.y) / 2;
+                        const perpDist = dist * 0.3;
+                        const perpAngle = segAngle + Math.PI / 2;
+                        const controlX = midX + Math.cos(perpAngle) * perpDist;
+                        const controlY = midY + Math.sin(perpAngle) * perpDist;
+
+                        ctx.beginPath();
+                        ctx.moveTo(prev.x, prev.y);
+                        ctx.quadraticCurveTo(controlX, controlY, pos.x, pos.y);
+                        ctx.stroke();
+                    }
+                } else {
+                    ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pos.x, pos.y); ctx.stroke();
+                }
+                ctx.lineWidth = 1;
+
+                if (!p.isAction) {
+                    const hp = handlePosPixels(p);
+                    ctx.strokeStyle = '#f59e0b'; ctx.beginPath(); ctx.moveTo(pos.x, pos.y); ctx.lineTo(hp.x, hp.y); ctx.stroke();
+                    ctx.fillStyle = '#b45309'; ctx.beginPath(); ctx.arc(hp.x, hp.y, 6, 0, Math.PI*2); ctx.fill();
+                }
+            });
+
+            markers.forEach((a) => {
+                const p = toPixels(a.x, a.y);
+                ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(p.x, p.y - 7);
+                ctx.lineTo(p.x + 7, p.y);
+                ctx.lineTo(p.x, p.y + 7);
+                ctx.lineTo(p.x - 7, p.y);
+                ctx.closePath(); ctx.stroke();
+                ctx.fillStyle = 'rgba(167,139,250,0.35)'; ctx.fill();
+            });
+
+            if (btnAddAction) {
+                if (addActionMode) {
+                    btnAddAction.style.background = '#10b981';
+                    btnAddAction.style.color = '#001f13';
+                    btnAddAction.textContent = 'Add Action: Click field';
+                } else {
+                    btnAddAction.style.background = '';
+                    btnAddAction.style.color = '';
+                    btnAddAction.textContent = 'Add Action';
+                }
+            }
+        }
+
+        function generateCode() {
+            function radToDeg(r) { return r * 180 / Math.PI; }
+            function wrapDeg(d) { while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+
+            let code = "// Generated Path (robot-oriented)\n";
+            code += `// Start: x=${start.x.toFixed(2)} y=${start.y.toFixed(2)} h=${radToDeg(-start.h).toFixed(1)}deg\n\n`;
+
+            const pts = [start].concat(waypoints);
+            const startHeadingDeg = radToDeg(-pts[0].h);
+            code += `turnPID(${startHeadingDeg.toFixed(1)}); // face start heading\n`;
+
+            let curHeading = startHeadingDeg;
+
+            for (let i = 1; i < pts.length; i++) {
+                const prev = pts[i-1];
+                const cur = pts[i];
+                const dx = cur.x - prev.x;
+                const dy = cur.y - prev.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < 0.001) {
+                    if (Math.abs(cur.h) > 0.0001) {
+                        const wh = radToDeg(-cur.h);
+                        code += `turnPID(${wh.toFixed(1)}); // snap to waypoint heading\n`;
+                    }
+                    continue;
+                }
+
+                const segAngleRad = Math.atan2(dy, dx);
+                const segAngleDeg = radToDeg(segAngleRad);
+
+                // Check segment type
+                const segmentType = cur.segmentType || 'drive';
+                const arcSpeed = cur.arcSpeed || 0.8;
+
+                if (segmentType === 'arc') {
+                    // Arc command with heading transition
+                    const startH = radToDeg(-prev.h);
+                    const endH = radToDeg(-cur.h);
+                    code += `arc(${dist.toFixed(2)}, ${arcSpeed.toFixed(2)}, t -> t.at(1.0, ${Math.round(endH)}));\n`;
+                    curHeading = endH;
+                } else if (segmentType === 'strafe') {
+                    // Strafe command
+                    code += `strafePID(${dist.toFixed(2)}, ${Math.round(segAngleDeg)});\n`;
+                    curHeading = segAngleDeg;
+                } else {
+                    // Standard drive (default)
+                    code += `turnPID(${segAngleDeg.toFixed(1)});\n`;
+                    code += `drivePID(${dist.toFixed(2)}, ${segAngleDeg.toFixed(1)});\n`;
+                    curHeading = segAngleDeg;
+                }
+
+                // Waypoint heading override
+                if (Math.abs(cur.h) > 0.0001 && segmentType !== 'arc') {
+                    const wh = radToDeg(-cur.h);
+                    const delta = wrapDeg(wh - segAngleDeg);
+                    if (Math.abs(delta) > 1.0) {
+                        code += `turnPID(${wh.toFixed(1)}); // waypoint heading\n`;
+                    }
+                }
+
+                // Emit action if this is an action node
+                if (cur.isAction && cur.actionId) {
+                    const a = markers.find(m => m.id === cur.actionId);
+                    if (a) {
+                        code += `// action: ${a.name} at x=${cur.x.toFixed(2)} y=${cur.y.toFixed(2)}\n`;
+                        if (a.args && a.args.length > 0) code += `${a.name}(${a.args});\n`; else code += `${a.name}();\n`;
+                        code += `// TODO: implement ${a.name} in your AutoEngine (placeholder)\n`;
+                    }
+                }
+            }
+
+            output.value = code;
+        }
+
+        function clearPath() { waypoints = []; markers = []; start = { x: 0, y: 0, h: 0 }; selectedSegmentIdx = null; draw(); output.value = ""; }
+        function toggleAddAction() { addActionMode = !addActionMode; draw(); }
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && addActionMode) {
+                addActionMode = false; draw();
+            }
+        });
+        function copyCode() { output.select(); document.execCommand('copy'); }
+        function toggleSetStart() { setStartMode = !setStartMode; }
+
+        function simulate() {
+            if (isSimulating) return;
+            const points = [start].concat(waypoints);
+            if (points.length < 2) return;
+            isSimulating = true;
+
+            const driveSpeed = 0.8;
+            const turnSpeedDeg = 120;
+
+            let seg = 0;
+            let phase = 'turn';
+            let pos = { x: points[0].x, y: points[0].y };
+            let heading = radToDeg(-points[0].h);
+
+            function segInfo(i) {
+                const a = points[i];
+                const b = points[i+1];
+                const dx = b.x - a.x; const dy = b.y - a.y;
+                const len = Math.hypot(dx, dy);
+                const ang = radToDeg(Math.atan2(dy, dx));
+                return { len, ang, a, b };
+            }
+
+            let driveProgress = 0;
+
+            function step(dt) {
+                if (!isSimulating) return;
+                const info = (seg < points.length-1) ? segInfo(seg) : null;
+
+                if (!info) { isSimulating = false; draw(); return; }
+
+                if (phase === 'turn') {
+                    const target = wrapDeg(info.ang);
+                    const diff = wrapDeg(target - heading);
+                    const maxStep = turnSpeedDeg * (dt/1000);
+                    if (Math.abs(diff) <= 0.5) {
+                        heading = target;
+                        phase = 'drive';
+                        driveProgress = 0;
+                    } else {
+                        heading += Math.sign(diff) * Math.min(maxStep, Math.abs(diff));
+                    }
+                } else if (phase === 'drive') {
+                    const travel = driveSpeed * (dt/1000);
+                    driveProgress += travel;
+                    const frac = Math.min(1, driveProgress / info.len || 1);
+                    pos.x = info.a.x + (info.b.x - info.a.x) * frac;
+                    pos.y = info.a.y + (info.b.y - info.a.y) * frac;
+                    heading = info.ang;
+
+                    if (frac >= 1) {
+                        const wpHeading = radToDeg(-points[seg+1].h);
+                        if (Math.abs(wpHeading) > 0.0001) {
+                            phase = 'wpTurn';
+                        } else {
+                            seg++;
+                            phase = 'turn';
+                        }
+                    }
+                } else if (phase === 'wpTurn') {
+                    const target = wrapDeg(radToDeg(-points[seg+1].h));
+                    const diff = wrapDeg(target - heading);
+                    const maxStep = turnSpeedDeg * (dt/1000);
+                    if (Math.abs(diff) <= 0.5) {
+                        heading = target;
+                        seg++;
+                        phase = 'turn';
+                    } else {
+                        heading += Math.sign(diff) * Math.min(maxStep, Math.abs(diff));
+                    }
+                }
+
+                draw();
+
+                const ppx = toPixels(pos.x, pos.y);
+                ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(ppx.x, ppx.y, 8, 0, Math.PI*2); ctx.fill();
+                const hRad = degToRad(heading);
+                ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(ppx.x, ppx.y); ctx.lineTo(ppx.x + Math.cos(hRad) * 18, ppx.y - Math.sin(hRad) * 18); ctx.stroke();
+                ctx.lineWidth = 1;
+
+                if (seg >= points.length-1) { isSimulating = false; return; }
+
+                requestAnimationFrame((now) => { step(16); });
+            }
+
+            requestAnimationFrame((now) => { step(16); });
+        }
+
+        draw();
+    </script>
+</body>
+</html>
