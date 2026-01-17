@@ -48,6 +48,9 @@
             </select>
             <label style="margin-left: 16px;">Arc Speed:</label>
             <input id="arcSpeed" type="number" value="0.8" step="0.1" min="0.1" max="2.0" style="width: 60px;">
+            <label style="margin-left: 16px;">Sim Speed:</label>
+            <input id="simSpeed" type="range" value="1" step="0.1" min="0.1" max="3" style="width: 100px;">
+            <span id="simSpeedLabel" style="font-size: 12px; color: #cbd5e1; min-width: 30px;">1.0x</span>
         </div>
         <div class="legend">
             <span style="color: #3b82f6;">█ Blue: drivePID</span>
@@ -89,10 +92,12 @@
         let start = { x: 0, y: 0, h: 0 };
         let draggingIdx = -1;
         let draggingHIdx = -1;
+        let draggingArcControlIdx = -1; // for arc control point dragging
         let setStartMode = false;
         let addActionMode = false;
         let isSimulating = false;
         let selectedSegmentIdx = null; // index of segment being configured
+        let simSpeed = 1.0; // simulation speed multiplier
 
         function toPixels(mx, my) {
             return {
@@ -111,6 +116,13 @@
         const btnAddAction = document.querySelector('button[onclick="toggleAddAction()"]');
         const segmentTypeSelect = document.getElementById('segmentType');
         const arcSpeedInput = document.getElementById('arcSpeed');
+        const simSpeedInput = document.getElementById('simSpeed');
+        const simSpeedLabel = document.getElementById('simSpeedLabel');
+        
+        simSpeedInput.addEventListener('change', () => {
+            simSpeed = parseFloat(simSpeedInput.value);
+            simSpeedLabel.textContent = simSpeed.toFixed(1) + 'x';
+        });
 
         canvas.addEventListener('mousedown', (e) => {
             const rect = canvas.getBoundingClientRect();
@@ -132,6 +144,14 @@
                     if (waypoints[i].arcSpeed) arcSpeedInput.value = waypoints[i].arcSpeed;
                     draggingIdx = i;
                     return;
+                }
+                // Arc control point hit (if this is an arc segment)
+                if (waypoints[i].segmentType === 'arc' && waypoints[i].arcControlPoint) {
+                    const acp = toPixels(waypoints[i].arcControlPoint.x, waypoints[i].arcControlPoint.y);
+                    if (Math.hypot(px - acp.x, py - acp.y) < 10) {
+                        draggingArcControlIdx = i;
+                        return;
+                    }
                 }
                 // rotation handle hit
                 const hpos = handlePosPixels(waypoints[i]);
@@ -217,7 +237,7 @@
             if (hoveringMarker) canvas.style.cursor = addActionMode ? 'copy' : 'pointer';
             else canvas.style.cursor = 'crosshair';
 
-            if (draggingIdx === -1 && draggingHIdx === -1) return;
+            if (draggingIdx === -1 && draggingHIdx === -1 && draggingArcControlIdx === -1) return;
             const m = toMeters(px, py);
             if (draggingIdx >= 0) {
                 waypoints[draggingIdx].x = m.x;
@@ -233,10 +253,13 @@
                 const pos = toPixels(start.x, start.y);
                 start.h = Math.atan2(py - pos.y, px - pos.x);
                 draw(); generateCode();
+            } else if (draggingArcControlIdx >= 0) {
+                waypoints[draggingArcControlIdx].arcControlPoint = m;
+                draw(); generateCode();
             }
         });
 
-        window.addEventListener('mouseup', () => { draggingIdx = -1; draggingHIdx = -1; });
+        window.addEventListener('mouseup', () => { draggingIdx = -1; draggingHIdx = -1; draggingArcControlIdx = -1; });
 
         // Update selected segment when dropdown changes
         segmentTypeSelect.addEventListener('change', () => {
@@ -318,27 +341,48 @@
                 ctx.lineWidth = 2;
 
                 if (p.segmentType === 'arc') {
-                    // Draw arc curve
+                    // Draw arc curve using custom control point or auto-calculated
                     const prevWp = (i === 0) ? start : waypoints[i-1];
+                    const startHeading = (i === 0) ? start.h : waypoints[i-1].h;
+                    const endHeading = p.h;
+                    const headingDelta = wrapDeg(radToDeg(endHeading - startHeading));
+                    
                     const dx = p.x - prevWp.x;
                     const dy = p.y - prevWp.y;
                     const dist = Math.hypot(dx, dy);
                     const segAngle = Math.atan2(dy, dx);
-                    const startHeading = (i === 0) ? start.h : waypoints[i-1].h;
-                    const endHeading = p.h;
 
                     if (dist > 0.05) {
-                        // Draw bezier arc approximation
-                        const midX = (prev.x + pos.x) / 2;
-                        const midY = (prev.y + pos.y) / 2;
-                        const perpDist = dist * 0.3;
-                        const perpAngle = segAngle + Math.PI / 2;
-                        const controlX = midX + Math.cos(perpAngle) * perpDist;
-                        const controlY = midY + Math.sin(perpAngle) * perpDist;
+                        const startX = prev.x, startY = prev.y;
+                        const endX = pos.x, endY = pos.y;
+                        
+                        let controlX, controlY;
+                        
+                        // Use custom control point if user has set one
+                        if (p.arcControlPoint) {
+                            const cp = toPixels(p.arcControlPoint.x, p.arcControlPoint.y);
+                            controlX = cp.x;
+                            controlY = cp.y;
+                        } else {
+                            // Auto-calculate control point from heading
+                            const perpAngle = segAngle + (Math.sign(headingDelta) || 1) * Math.PI / 2;
+                            const arcRadius = dist / (2 * Math.sin(Math.abs(degToRad(headingDelta / 2)) || 0.1));
+                            const controlDist = Math.min(Math.abs(arcRadius) * 0.3, dist * 0.5);
+                            
+                            const midX = (startX + endX) / 2;
+                            const midY = (startY + endY) / 2;
+                            controlX = midX + Math.cos(perpAngle) * controlDist;
+                            controlY = midY + Math.sin(perpAngle) * controlDist;
+                            
+                            // Auto-save this control point so user can edit it
+                            if (!p.arcControlPoint) {
+                                p.arcControlPoint = toMeters(controlX, controlY);
+                            }
+                        }
 
                         ctx.beginPath();
-                        ctx.moveTo(prev.x, prev.y);
-                        ctx.quadraticCurveTo(controlX, controlY, pos.x, pos.y);
+                        ctx.moveTo(startX, startY);
+                        ctx.quadraticCurveTo(controlX, controlY, endX, endY);
                         ctx.stroke();
                     }
                 } else {
@@ -350,6 +394,15 @@
                     const hp = handlePosPixels(p);
                     ctx.strokeStyle = '#f59e0b'; ctx.beginPath(); ctx.moveTo(pos.x, pos.y); ctx.lineTo(hp.x, hp.y); ctx.stroke();
                     ctx.fillStyle = '#b45309'; ctx.beginPath(); ctx.arc(hp.x, hp.y, 6, 0, Math.PI*2); ctx.fill();
+                    
+                    // Draw arc control point handle if this is an arc segment
+                    if (p.segmentType === 'arc' && p.arcControlPoint) {
+                        const acp = toPixels(p.arcControlPoint.x, p.arcControlPoint.y);
+                        ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 2;
+                        ctx.beginPath(); ctx.moveTo(pos.x, pos.y); ctx.lineTo(acp.x, acp.y); ctx.stroke();
+                        ctx.fillStyle = '#be185d'; ctx.beginPath(); ctx.arc(acp.x, acp.y, 8, 0, Math.PI*2); ctx.fill();
+                        ctx.fillStyle = '#fce7f3'; ctx.font = 'bold 10px sans-serif'; ctx.fillText('C', acp.x - 3, acp.y + 3);
+                    }
                 }
             });
 
@@ -473,7 +526,7 @@
             const turnSpeedDeg = 120;
 
             let seg = 0;
-            let phase = 'turn';
+            let phase = 'turn'; // 'turn', 'drive', 'strafe', 'arc', or 'wpTurn'
             let pos = { x: points[0].x, y: points[0].y };
             let heading = radToDeg(-points[0].h);
 
@@ -483,7 +536,26 @@
                 const dx = b.x - a.x; const dy = b.y - a.y;
                 const len = Math.hypot(dx, dy);
                 const ang = radToDeg(Math.atan2(dy, dx));
-                return { len, ang, a, b };
+                const segmentType = b.segmentType || 'drive';
+                return { len, ang, a, b, segmentType };
+            }
+
+            // Bezier curve interpolation
+            function bezierPoint(t, p0x, p0y, p1x, p1y, p2x, p2y) {
+                const mt = 1 - t;
+                const x = mt * mt * p0x + 2 * mt * t * p1x + t * t * p2x;
+                const y = mt * mt * p0y + 2 * mt * t * p1y + t * t * p2y;
+                return { x, y };
+            }
+
+            // Get arc control point for a segment
+            function getArcControlPoint(segIdx) {
+                if (segIdx < 1 || segIdx >= waypoints.length) return null;
+                const wp = waypoints[segIdx];
+                if (wp.segmentType === 'arc' && wp.arcControlPoint) {
+                    return wp.arcControlPoint;
+                }
+                return null;
             }
 
             let driveProgress = 0;
@@ -494,19 +566,30 @@
 
                 if (!info) { isSimulating = false; draw(); return; }
 
+                const segType = info.segmentType;
+
                 if (phase === 'turn') {
                     const target = wrapDeg(info.ang);
                     const diff = wrapDeg(target - heading);
-                    const maxStep = turnSpeedDeg * (dt/1000);
+                    const maxStep = turnSpeedDeg * (dt/1000) * simSpeed;
                     if (Math.abs(diff) <= 0.5) {
                         heading = target;
-                        phase = 'drive';
+                        if (segType === 'strafe') {
+                            // For strafe, round heading to nearest 90 degrees
+                            const roundedHeading = Math.round(heading / 90) * 90;
+                            heading = wrapDeg(roundedHeading);
+                            phase = 'strafe';
+                        } else if (segType === 'arc') {
+                            phase = 'arc';
+                        } else {
+                            phase = 'drive';
+                        }
                         driveProgress = 0;
                     } else {
                         heading += Math.sign(diff) * Math.min(maxStep, Math.abs(diff));
                     }
                 } else if (phase === 'drive') {
-                    const travel = driveSpeed * (dt/1000);
+                    const travel = driveSpeed * (dt/1000) * simSpeed;
                     driveProgress += travel;
                     const frac = Math.min(1, driveProgress / info.len || 1);
                     pos.x = info.a.x + (info.b.x - info.a.x) * frac;
@@ -522,10 +605,76 @@
                             phase = 'turn';
                         }
                     }
+                } else if (phase === 'strafe') {
+                    // Strafe: move sideways while maintaining constant heading
+                    const travel = driveSpeed * (dt/1000) * simSpeed;
+                    driveProgress += travel;
+                    const frac = Math.min(1, driveProgress / info.len || 1);
+                    
+                    // Move perpendicular to the heading direction
+                    pos.x = info.a.x + (info.b.x - info.a.x) * frac;
+                    pos.y = info.a.y + (info.b.y - info.a.y) * frac;
+                    // Keep heading constant during strafe (already rounded to 90 degrees)
+
+                    if (frac >= 1) {
+                        const wpHeading = radToDeg(-points[seg+1].h);
+                        if (Math.abs(wpHeading) > 0.0001) {
+                            phase = 'wpTurn';
+                        } else {
+                            seg++;
+                            phase = 'turn';
+                        }
+                    }
+                } else if (phase === 'arc') {
+                    const prevWp = (seg === 0) ? start : waypoints[seg-1];
+                    const curWp = waypoints[seg];
+                    const startHeading = (seg === 0) ? start.h : waypoints[seg-1].h;
+                    const endHeading = curWp.h;
+                    const headingDelta = wrapDeg(radToDeg(endHeading - startHeading));
+
+                    const travel = driveSpeed * (dt/1000) * simSpeed;
+                    driveProgress += travel;
+                    const frac = Math.min(1, driveProgress / info.len || 1);
+
+                    let controlPt = getArcControlPoint(seg);
+                    if (!controlPt) {
+                        const dx = info.b.x - info.a.x;
+                        const dy = info.b.y - info.a.y;
+                        const dist = Math.hypot(dx, dy);
+                        const segAngle = Math.atan2(dy, dx);
+                        const perpAngle = segAngle + (Math.sign(headingDelta) || 1) * Math.PI / 2;
+                        const arcRadius = dist / (2 * Math.sin(Math.abs(degToRad(headingDelta / 2)) || 0.1));
+                        const controlDist = Math.min(Math.abs(arcRadius) * 0.3, dist * 0.5);
+                        const midX = (info.a.x + info.b.x) / 2;
+                        const midY = (info.a.y + info.b.y) / 2;
+                        controlPt = {
+                            x: midX + Math.cos(perpAngle) * controlDist,
+                            y: midY + Math.sin(perpAngle) * controlDist
+                        };
+                    }
+
+                    const bezPt = bezierPoint(frac, info.a.x, info.a.y, controlPt.x, controlPt.y, info.b.x, info.b.y);
+                    pos.x = bezPt.x;
+                    pos.y = bezPt.y;
+
+                    const startH = (seg === 0) ? radToDeg(-start.h) : radToDeg(-waypoints[seg-1].h);
+                    const endH = radToDeg(-curWp.h);
+                    heading = startH + (endH - startH) * frac;
+                    heading = wrapDeg(heading);
+
+                    if (frac >= 1) {
+                        const wpHeading = radToDeg(-points[seg+1].h);
+                        if (Math.abs(wpHeading) > 0.0001) {
+                            phase = 'wpTurn';
+                        } else {
+                            seg++;
+                            phase = 'turn';
+                        }
+                    }
                 } else if (phase === 'wpTurn') {
                     const target = wrapDeg(radToDeg(-points[seg+1].h));
                     const diff = wrapDeg(target - heading);
-                    const maxStep = turnSpeedDeg * (dt/1000);
+                    const maxStep = turnSpeedDeg * (dt/1000) * simSpeed;
                     if (Math.abs(diff) <= 0.5) {
                         heading = target;
                         seg++;
