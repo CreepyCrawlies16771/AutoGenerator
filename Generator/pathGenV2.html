@@ -6,7 +6,6 @@
         body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; background: #1a1a1b; color: white; margin: 20px; }
         canvas {
             background-color: #2d2d2e;
-            /* Use local field image file */
             background-image: url('field.png');
             background-position: center;
             background-size: cover;
@@ -20,33 +19,56 @@
         button { padding: 10px 20px; font-weight: bold; cursor: pointer; border: none; border-radius: 6px; }
         .btn-clear { background: #ef4444; color: white; }
         .btn-copy { background: #4f46e5; color: white; }
-        .segment-controls { display: flex; gap: 8px; align-items: center; background: #1a1a1b; padding: 8px 12px; border-radius: 6px; border: 1px solid #444; }
+        .btn-delete { background: #f97316; color: white; }
+        .btn-undo { background: #8b5cf6; color: white; }
+        .segment-controls { display: flex; gap: 8px; align-items: center; background: #1a1a1b; padding: 8px 12px; border-radius: 6px; border: 1px solid #444; flex-wrap: wrap; }
         .segment-controls label { font-size: 12px; color: #cbd5e1; }
         .segment-controls select, .segment-controls input { padding: 6px; border-radius: 4px; border: 1px solid #444; background: #0f172a; color: #fff; font-size: 12px; }
         .legend { margin-top: 12px; font-size: 12px; color: #94a3b8; }
         .legend span { margin-right: 20px; }
+        .mode-selector { display: flex; gap: 8px; margin-bottom: 10px; }
+        .mode-btn { padding: 10px 15px; background: #4f46e5; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        .mode-btn.active { background: #10b981; }
+        .decoder-section { display: none; background: #1a1a1b; padding: 12px; border-radius: 6px; border: 1px solid #444; margin-bottom: 10px; }
+        .decoder-section.show { display: block; }
+        .decoder-input { width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #444; background: #0f172a; color: #fff; border-radius: 4px; font-family: monospace; }
     </style>
 </head>
 <body>
     <h2>PID Engine Path Generator</h2>
+    
+    <div class="mode-selector">
+        <button class="mode-btn active" onclick="setMode('robot')">🤖 Robot-Oriented</button>
+        <button class="mode-btn" onclick="setMode('field')">🎯 Field-Oriented</button>
+        <button class="mode-btn" onclick="toggleDecoder()">🔓 Decode Auto</button>
+    </div>
+
     <canvas id="field" width="600" height="600"></canvas>
+
+    <div class="decoder-section" id="decoderSection">
+        <label>Paste Auto Code Here:</label>
+        <textarea id="decoderInput" class="decoder-input" placeholder="Paste generated code or Java path..."></textarea>
+        <button onclick="decodeAndVisualize()">Decode Path</button>
+    </div>
 
     <div class="controls">
         <div class="toolbar">
             <button class="btn-clear" onclick="clearPath()">Clear Path</button>
+            <button class="btn-undo" onclick="undo()">↶ Undo</button>
+            <button class="btn-delete" onclick="deleteSelectedPoint()">Delete Point</button>
             <button onclick="toggleSetStart()">Set Start</button>
             <button onclick="toggleAddAction()">Add Action</button>
             <button onclick="simulate()">Simulate</button>
-            <button class="btn-copy" onclick="copyCode()">Copy Java Code</button>
+            <button class="btn-copy" onclick="copyCode()">Copy Code</button>
         </div>
         <div class="segment-controls">
-            <label>Selected Segment Type:</label>
+            <label id="segmentLabel">Selected Segment Type:</label>
             <select id="segmentType">
                 <option value="drive">Drive (Blue)</option>
                 <option value="strafe">Strafe (Yellow)</option>
                 <option value="arc">Arc (Cyan)</option>
             </select>
-            <label style="margin-left: 16px;">Arc Speed:</label>
+            <label style="margin-left: 16px;" id="arcSpeedLabel">Arc Speed:</label>
             <input id="arcSpeed" type="number" value="0.8" step="0.1" min="0.1" max="2.0" style="width: 60px;">
             <label style="margin-left: 16px;">Sim Speed:</label>
             <input id="simSpeed" type="range" value="1" step="0.1" min="0.1" max="3" style="width: 100px;">
@@ -67,6 +89,10 @@
         const fieldMeters = 3.6576; // FTC field dimension in meters
         let ppm = canvas.width / fieldMeters;
         let drawX = 0, drawY = 0, drawW = canvas.width, drawH = canvas.height;
+
+        // Mode state
+        let currentMode = 'robot'; // 'robot' or 'field'
+        let history = [];
 
         // helpers
         function radToDeg(r) { return r * 180 / Math.PI; }
@@ -92,12 +118,109 @@
         let start = { x: 0, y: 0, h: 0 };
         let draggingIdx = -1;
         let draggingHIdx = -1;
-        let draggingArcControlIdx = -1; // for arc control point dragging
+        let draggingArcControlIdx = -1;
         let setStartMode = false;
         let addActionMode = false;
         let isSimulating = false;
-        let selectedSegmentIdx = null; // index of segment being configured
-        let simSpeed = 1.0; // simulation speed multiplier
+        let selectedSegmentIdx = null;
+        let simSpeed = 1.0;
+
+        function saveState() {
+            history.push({
+                waypoints: JSON.parse(JSON.stringify(waypoints)),
+                markers: JSON.parse(JSON.stringify(markers)),
+                start: JSON.parse(JSON.stringify(start)),
+                selectedSegmentIdx: selectedSegmentIdx
+            });
+            if (history.length > 20) history.shift();
+        }
+
+        function undo() {
+            if (history.length === 0) return;
+            const state = history.pop();
+            waypoints = state.waypoints;
+            markers = state.markers;
+            start = state.start;
+            selectedSegmentIdx = state.selectedSegmentIdx;
+            draw();
+            generateCode();
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+            const btns = document.querySelectorAll('.mode-btn');
+            btns.forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update segment controls visibility
+            const segmentLabel = document.getElementById('segmentLabel');
+            const arcSpeedLabel = document.getElementById('arcSpeedLabel');
+            const segmentSelect = document.getElementById('segmentType');
+            const arcSpeedInput = document.getElementById('arcSpeed');
+            
+            if (mode === 'field') {
+                segmentLabel.style.display = 'none';
+                segmentSelect.style.display = 'none';
+                arcSpeedLabel.style.display = 'none';
+                arcSpeedInput.style.display = 'none';
+            } else {
+                segmentLabel.style.display = 'inline';
+                segmentSelect.style.display = 'inline';
+                arcSpeedLabel.style.display = 'inline';
+                arcSpeedInput.style.display = 'inline';
+            }
+            
+            draw();
+            generateCode();
+        }
+
+        function toggleDecoder() {
+            const section = document.getElementById('decoderSection');
+            section.classList.toggle('show');
+        }
+
+        function decodeAndVisualize() {
+            const code = document.getElementById('decoderInput').value;
+            if (!code.trim()) return;
+
+            try {
+                // Parse Pose2d coordinates from the code
+                const poseRegex = /new\s+Pose2d\((-?\d+\.?\d*),\s*(-?\d+\.?\d*),.*?(?:Rotation2d\.fromDegrees\((-?\d+\.?\d*)\)|new\s+Rotation2d\((-?\d+\.?\d*)\))\)/g;
+                
+                saveState();
+                waypoints = [];
+                markers = [];
+                
+                let match;
+                let idx = 0;
+                while ((match = poseRegex.exec(code)) !== null) {
+                    const x = parseFloat(match[1]) / 100; // Convert CM to meters
+                    const y = parseFloat(match[2]) / 100;
+                    const angle = parseFloat(match[3] || match[4] || 0);
+                    
+                    if (idx === 0) {
+                        start = { x, y, h: degToRad(-angle) };
+                    } else {
+                        waypoints.push({
+                            x, y,
+                            h: degToRad(-angle),
+                            segmentType: 'drive',
+                            arcSpeed: 0.8
+                        });
+                    }
+                    idx++;
+                }
+                
+                if (waypoints.length > 0) {
+                    selectedSegmentIdx = 0;
+                    document.getElementById('decoderSection').classList.remove('show');
+                    draw();
+                    generateCode();
+                }
+            } catch (e) {
+                alert('Failed to decode: ' + e.message);
+            }
+        }
 
         function toPixels(mx, my) {
             return {
@@ -145,7 +268,7 @@
                     draggingIdx = i;
                     return;
                 }
-                // Arc control point hit (if this is an arc segment)
+                // Arc control point hit
                 if (waypoints[i].segmentType === 'arc' && waypoints[i].arcControlPoint) {
                     const acp = toPixels(waypoints[i].arcControlPoint.x, waypoints[i].arcControlPoint.y);
                     if (Math.hypot(px - acp.x, py - acp.y) < 10) {
@@ -163,6 +286,7 @@
             if (Math.hypot(px - sh.x, py - sh.y) < 10) { draggingHIdx = -2; return; }
 
             if (setStartMode) {
+                saveState();
                 start = { x: m.x, y: m.y, h: 0 };
                 setStartMode = false;
                 draw(); generateCode();
@@ -173,6 +297,7 @@
             for (let i = 0; i < markers.length; i++) {
                 const mp = toPixels(markers[i].x, markers[i].y);
                 if (Math.hypot(px - mp.x, py - mp.y) < 10) {
+                    saveState();
                     let insertAt = waypoints.length;
                     for (let j = waypoints.length - 1; j >= 0; j--) {
                         if (!waypoints[j].isAction) { insertAt = j + 1; break; }
@@ -188,6 +313,7 @@
                 if (name === null || name.trim() === '') { addActionMode = false; draw(); return; }
                 const args = prompt('Arguments (comma separated, optional):', '');
 
+                saveState();
                 let found = null;
                 for (let i = 0; i < markers.length; i++) {
                     const d = Math.hypot(markers[i].x - m.x, markers[i].y - m.y);
@@ -217,9 +343,12 @@
             }
 
             // otherwise add waypoint with default segment type
-            waypoints.push({ x: m.x, y: m.y, h: 0, segmentType: 'drive', arcSpeed: 0.8 });
+            saveState();
+            // Field-oriented only supports drive segments
+            const defaultSegmentType = currentMode === 'field' ? 'drive' : 'drive';
+            waypoints.push({ x: m.x, y: m.y, h: 0, segmentType: defaultSegmentType, arcSpeed: 0.8 });
             selectedSegmentIdx = waypoints.length - 1;
-            segmentTypeSelect.value = 'drive';
+            segmentTypeSelect.value = defaultSegmentType;
             arcSpeedInput.value = 0.8;
             draw();
             generateCode();
@@ -234,7 +363,16 @@
                 const mp = toPixels(markers[i].x, markers[i].y);
                 if (Math.hypot(px - mp.x, py - mp.y) < 10) { hoveringMarker = true; break; }
             }
+            
+            // Check if hovering over waypoint for easier clicking
+            let hoveringWaypoint = false;
+            for (let i = 0; i < waypoints.length; i++) {
+                const pos = toPixels(waypoints[i].x, waypoints[i].y);
+                if (Math.hypot(px - pos.x, py - pos.y) < 15) { hoveringWaypoint = true; break; }
+            }
+            
             if (hoveringMarker) canvas.style.cursor = addActionMode ? 'copy' : 'pointer';
+            else if (hoveringWaypoint) canvas.style.cursor = 'move';
             else canvas.style.cursor = 'crosshair';
 
             if (draggingIdx === -1 && draggingHIdx === -1 && draggingArcControlIdx === -1) return;
@@ -261,9 +399,14 @@
 
         window.addEventListener('mouseup', () => { draggingIdx = -1; draggingHIdx = -1; draggingArcControlIdx = -1; });
 
-        // Update selected segment when dropdown changes
         segmentTypeSelect.addEventListener('change', () => {
             if (selectedSegmentIdx !== null && waypoints[selectedSegmentIdx]) {
+                saveState();
+                // Prevent arc in field-oriented mode
+                if (currentMode === 'field' && segmentTypeSelect.value === 'arc') {
+                    segmentTypeSelect.value = 'drive';
+                    return;
+                }
                 waypoints[selectedSegmentIdx].segmentType = segmentTypeSelect.value;
                 draw(); generateCode();
             }
@@ -271,6 +414,7 @@
 
         arcSpeedInput.addEventListener('change', () => {
             if (selectedSegmentIdx !== null && waypoints[selectedSegmentIdx]) {
+                saveState();
                 waypoints[selectedSegmentIdx].arcSpeed = parseFloat(arcSpeedInput.value);
                 generateCode();
             }
@@ -286,6 +430,15 @@
             const pos = toPixels(start.x, start.y);
             const r = 18;
             return { x: pos.x + Math.cos(start.h) * r, y: pos.y + Math.sin(start.h) * r };
+        }
+
+        function deleteSelectedPoint() {
+            if (selectedSegmentIdx !== null && selectedSegmentIdx >= 0 && waypoints[selectedSegmentIdx]) {
+                saveState();
+                waypoints.splice(selectedSegmentIdx, 1);
+                selectedSegmentIdx = null;
+                draw(); generateCode();
+            }
         }
 
         function draw() {
@@ -329,7 +482,6 @@
                         ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.fillText(m.name, pos.x + 10, pos.y + 3);
                     }
                 } else {
-                    // Draw colored circles based on segment type
                     const color = p.segmentType === 'strafe' ? '#eab308' : (p.segmentType === 'arc' ? '#06b6d4' : '#3b82f6');
                     ctx.fillStyle = color;
                     ctx.beginPath(); ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2); ctx.fill();
@@ -340,8 +492,10 @@
                 ctx.strokeStyle = color;
                 ctx.lineWidth = 2;
 
-                if (p.segmentType === 'arc') {
-                    // Draw arc curve using custom control point or auto-calculated
+                // In field-oriented mode, always show linear paths
+                if (currentMode === 'field' || p.segmentType === 'drive' || p.segmentType === 'strafe') {
+                    ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pos.x, pos.y); ctx.stroke();
+                } else if (p.segmentType === 'arc') {
                     const prevWp = (i === 0) ? start : waypoints[i-1];
                     const startHeading = (i === 0) ? start.h : waypoints[i-1].h;
                     const endHeading = p.h;
@@ -358,13 +512,11 @@
                         
                         let controlX, controlY;
                         
-                        // Use custom control point if user has set one
                         if (p.arcControlPoint) {
                             const cp = toPixels(p.arcControlPoint.x, p.arcControlPoint.y);
                             controlX = cp.x;
                             controlY = cp.y;
                         } else {
-                            // Auto-calculate control point from heading
                             const perpAngle = segAngle + (Math.sign(headingDelta) || 1) * Math.PI / 2;
                             const arcRadius = dist / (2 * Math.sin(Math.abs(degToRad(headingDelta / 2)) || 0.1));
                             const controlDist = Math.min(Math.abs(arcRadius) * 0.3, dist * 0.5);
@@ -374,7 +526,6 @@
                             controlX = midX + Math.cos(perpAngle) * controlDist;
                             controlY = midY + Math.sin(perpAngle) * controlDist;
                             
-                            // Auto-save this control point so user can edit it
                             if (!p.arcControlPoint) {
                                 p.arcControlPoint = toMeters(controlX, controlY);
                             }
@@ -385,17 +536,14 @@
                         ctx.quadraticCurveTo(controlX, controlY, endX, endY);
                         ctx.stroke();
                     }
-                } else {
-                    ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(pos.x, pos.y); ctx.stroke();
                 }
                 ctx.lineWidth = 1;
 
-                if (!p.isAction) {
+                if (!p.isAction && currentMode === 'robot') {
                     const hp = handlePosPixels(p);
                     ctx.strokeStyle = '#f59e0b'; ctx.beginPath(); ctx.moveTo(pos.x, pos.y); ctx.lineTo(hp.x, hp.y); ctx.stroke();
                     ctx.fillStyle = '#b45309'; ctx.beginPath(); ctx.arc(hp.x, hp.y, 6, 0, Math.PI*2); ctx.fill();
                     
-                    // Draw arc control point handle if this is an arc segment
                     if (p.segmentType === 'arc' && p.arcControlPoint) {
                         const acp = toPixels(p.arcControlPoint.x, p.arcControlPoint.y);
                         ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 2;
@@ -432,6 +580,14 @@
         }
 
         function generateCode() {
+            if (currentMode === 'field') {
+                generateFieldOrientedCode();
+            } else {
+                generateRobotOrientedCode();
+            }
+        }
+
+        function generateRobotOrientedCode() {
             function radToDeg(r) { return r * 180 / Math.PI; }
             function wrapDeg(d) { while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
 
@@ -462,28 +618,23 @@
                 const segAngleRad = Math.atan2(dy, dx);
                 const segAngleDeg = radToDeg(segAngleRad);
 
-                // Check segment type
                 const segmentType = cur.segmentType || 'drive';
                 const arcSpeed = cur.arcSpeed || 0.8;
 
                 if (segmentType === 'arc') {
-                    // Arc command with heading transition
                     const startH = radToDeg(-prev.h);
                     const endH = radToDeg(-cur.h);
                     code += `arc(${dist.toFixed(2)}, ${arcSpeed.toFixed(2)}, t -> t.at(1.0, ${Math.round(endH)}));\n`;
                     curHeading = endH;
                 } else if (segmentType === 'strafe') {
-                    // Strafe command
                     code += `strafePID(${dist.toFixed(2)}, ${Math.round(segAngleDeg)});\n`;
                     curHeading = segAngleDeg;
                 } else {
-                    // Standard drive (default)
                     code += `turnPID(${segAngleDeg.toFixed(1)});\n`;
                     code += `drivePID(${dist.toFixed(2)}, ${segAngleDeg.toFixed(1)});\n`;
                     curHeading = segAngleDeg;
                 }
 
-                // Waypoint heading override
                 if (Math.abs(cur.h) > 0.0001 && segmentType !== 'arc') {
                     const wh = radToDeg(-cur.h);
                     const delta = wrapDeg(wh - segAngleDeg);
@@ -492,7 +643,6 @@
                     }
                 }
 
-                // Emit action if this is an action node
                 if (cur.isAction && cur.actionId) {
                     const a = markers.find(m => m.id === cur.actionId);
                     if (a) {
@@ -506,14 +656,106 @@
             output.value = code;
         }
 
-        function clearPath() { waypoints = []; markers = []; start = { x: 0, y: 0, h: 0 }; selectedSegmentIdx = null; draw(); output.value = ""; }
+        function generateFieldOrientedCode() {
+            function radToDeg(r) { return r * 180 / Math.PI; }
+
+            let code = "";
+            
+            // Generate createPath() method
+            code += "/**\n";
+            code += " * Define your path as a series of waypoints in Centimeters.\n";
+            code += " */\n";
+            code += "private List<Pose2d> createPath() {\n";
+            code += "    List<Pose2d> waypoints = new ArrayList<>();\n\n";
+
+            // Add start pose
+            const startCmX = (start.x * 100).toFixed(1);
+            const startCmY = (start.y * 100).toFixed(1);
+            const startDeg = radToDeg(-start.h).toFixed(1);
+            code += `    // Start pose\n`;
+            code += `    waypoints.add(new Pose2d(${startCmX}, ${startCmY}, Rotation2d.fromDegrees(${startDeg})));\n\n`;
+
+            // Add waypoints (only non-action waypoints)
+            waypoints.forEach((wp, i) => {
+                if (!wp.isAction) {
+                    const cmX = (wp.x * 100).toFixed(1);
+                    const cmY = (wp.y * 100).toFixed(1);
+                    const deg = radToDeg(-wp.h).toFixed(1);
+                    code += `    waypoints.add(new Pose2d(${cmX}, ${cmY}, Rotation2d.fromDegrees(${deg})));\n`;
+                }
+            });
+
+            code += "\n    return waypoints;\n";
+            code += "}\n\n";
+
+            // Generate createMarkers() method if there are actions
+            const hasActions = waypoints.some(wp => wp.isAction);
+            if (hasActions) {
+                code += "/**\n";
+                code += " * Define markers to trigger actions at specific points in the path.\n";
+                code += " * Uses the PathMarker class and RobotAction interface from the Follower parent.\n";
+                code += " */\n";
+                code += "private List<PathMarker> createMarkers() {\n";
+                code += "    List<PathMarker> markers = new ArrayList<>();\n\n";
+
+                // Add markers for actions
+                let pathPercentage = 0;
+                let totalWaypoints = waypoints.filter(wp => !wp.isAction).length;
+                let currentWaypointIndex = 0;
+                
+                waypoints.forEach((wp, i) => {
+                    if (!wp.isAction) {
+                        currentWaypointIndex++;
+                    } else {
+                        const marker = markers.find(m => m.id === wp.actionId);
+                        if (marker) {
+                            const percent = ((currentWaypointIndex / totalWaypoints) * 100).toFixed(1);
+                            code += `    markers.add(new PathMarker(${percent}, () -> {\n`;
+                            code += `        // ${marker.name}\n`;
+                            if (marker.args) code += `        // Args: ${marker.args}\n`;
+                            code += `        telemetry.addData("Marker", "${percent}% - ${marker.name}");\n`;
+                            code += `        telemetry.update();\n`;
+                            code += `    }));\n\n`;
+                        }
+                    }
+                });
+
+                code += "    return markers;\n";
+                code += "}\n";
+            } else {
+                code += "/**\n";
+                code += " * No markers defined. Return empty list or implement as needed.\n";
+                code += " */\n";
+                code += "private List<PathMarker> createMarkers() {\n";
+                code += "    return new ArrayList<>();\n";
+                code += "}\n";
+            }
+
+            output.value = code;
+        }
+
+        function clearPath() {
+            if (confirm('Clear all waypoints?')) {
+                saveState();
+                waypoints = [];
+                markers = [];
+                start = { x: 0, y: 0, h: 0 };
+                selectedSegmentIdx = null;
+                draw();
+                output.value = "";
+            }
+        }
+
         function toggleAddAction() { addActionMode = !addActionMode; draw(); }
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && addActionMode) {
                 addActionMode = false; draw();
             }
+            if (e.key === 'Delete' && selectedSegmentIdx !== null) {
+                deleteSelectedPoint();
+            }
         });
-        function copyCode() { output.select(); document.execCommand('copy'); }
+        function copyCode() { output.select(); document.execCommand('copy'); alert('Code copied!'); }
         function toggleSetStart() { setStartMode = !setStartMode; }
 
         function simulate() {
@@ -526,9 +768,11 @@
             const turnSpeedDeg = 120;
 
             let seg = 0;
-            let phase = 'turn'; // 'turn', 'drive', 'strafe', 'arc', or 'wpTurn'
+            let phase = 'turn';
             let pos = { x: points[0].x, y: points[0].y };
             let heading = radToDeg(-points[0].h);
+            let totalDistance = 0;
+            let distanceTraveled = 0;
 
             function segInfo(i) {
                 const a = points[i];
@@ -540,7 +784,6 @@
                 return { len, ang, a, b, segmentType };
             }
 
-            // Bezier curve interpolation
             function bezierPoint(t, p0x, p0y, p1x, p1y, p2x, p2y) {
                 const mt = 1 - t;
                 const x = mt * mt * p0x + 2 * mt * t * p1x + t * t * p2x;
@@ -548,7 +791,6 @@
                 return { x, y };
             }
 
-            // Get arc control point for a segment
             function getArcControlPoint(segIdx) {
                 if (segIdx < 1 || segIdx >= waypoints.length) return null;
                 const wp = waypoints[segIdx];
@@ -556,6 +798,48 @@
                     return wp.arcControlPoint;
                 }
                 return null;
+            }
+
+            // Calculate total distance
+            for (let i = 0; i < points.length - 1; i++) {
+                totalDistance += segInfo(i).len;
+            }
+
+            // Pre-calculate path points for visualization
+            const pathPoints = [];
+            for (let i = 0; i < points.length - 1; i++) {
+                const info = segInfo(i);
+                
+                if (info.segmentType === 'arc' && currentMode === 'robot') {
+                    let controlPt = getArcControlPoint(i);
+                    if (!controlPt) {
+                        const dx = info.b.x - info.a.x;
+                        const dy = info.b.y - info.a.y;
+                        const dist = Math.hypot(dx, dy);
+                        const segAngle = Math.atan2(dy, dx);
+                        const startH = (i === 0) ? start.h : waypoints[i-1].h;
+                        const endH = info.b.h;
+                        const headingDelta = wrapDeg(radToDeg(endH - startH));
+                        const perpAngle = segAngle + (Math.sign(headingDelta) || 1) * Math.PI / 2;
+                        const arcRadius = dist / (2 * Math.sin(Math.abs(degToRad(headingDelta / 2)) || 0.1));
+                        const controlDist = Math.min(Math.abs(arcRadius) * 0.3, dist * 0.5);
+                        const midX = (info.a.x + info.b.x) / 2;
+                        const midY = (info.a.y + info.b.y) / 2;
+                        controlPt = {
+                            x: midX + Math.cos(perpAngle) * controlDist,
+                            y: midY + Math.sin(perpAngle) * controlDist
+                        };
+                    }
+                    
+                    // Sample arc curve
+                    for (let t = 0; t <= 1; t += 0.05) {
+                        const pt = bezierPoint(t, info.a.x, info.a.y, controlPt.x, controlPt.y, info.b.x, info.b.y);
+                        pathPoints.push(pt);
+                    }
+                } else {
+                    pathPoints.push(info.a);
+                    pathPoints.push(info.b);
+                }
             }
 
             let driveProgress = 0;
@@ -575,7 +859,6 @@
                     if (Math.abs(diff) <= 0.5) {
                         heading = target;
                         if (segType === 'strafe') {
-                            // For strafe, round heading to nearest 90 degrees
                             const roundedHeading = Math.round(heading / 90) * 90;
                             heading = wrapDeg(roundedHeading);
                             phase = 'strafe';
@@ -591,6 +874,7 @@
                 } else if (phase === 'drive') {
                     const travel = driveSpeed * (dt/1000) * simSpeed;
                     driveProgress += travel;
+                    distanceTraveled += travel;
                     const frac = Math.min(1, driveProgress / info.len || 1);
                     pos.x = info.a.x + (info.b.x - info.a.x) * frac;
                     pos.y = info.a.y + (info.b.y - info.a.y) * frac;
@@ -606,15 +890,13 @@
                         }
                     }
                 } else if (phase === 'strafe') {
-                    // Strafe: move sideways while maintaining constant heading
                     const travel = driveSpeed * (dt/1000) * simSpeed;
                     driveProgress += travel;
+                    distanceTraveled += travel;
                     const frac = Math.min(1, driveProgress / info.len || 1);
                     
-                    // Move perpendicular to the heading direction
                     pos.x = info.a.x + (info.b.x - info.a.x) * frac;
                     pos.y = info.a.y + (info.b.y - info.a.y) * frac;
-                    // Keep heading constant during strafe (already rounded to 90 degrees)
 
                     if (frac >= 1) {
                         const wpHeading = radToDeg(-points[seg+1].h);
@@ -634,6 +916,7 @@
 
                     const travel = driveSpeed * (dt/1000) * simSpeed;
                     driveProgress += travel;
+                    distanceTraveled += travel;
                     const frac = Math.min(1, driveProgress / info.len || 1);
 
                     let controlPt = getArcControlPoint(seg);
@@ -684,13 +967,41 @@
                     }
                 }
 
+                // Draw everything
                 draw();
 
+                // Draw the planned path in green
+                ctx.strokeStyle = '#10b981';
+                ctx.lineWidth = 3;
+                ctx.globalAlpha = 0.6;
+                
+                for (let i = 0; i < pathPoints.length - 1; i++) {
+                    const p1 = toPixels(pathPoints[i].x, pathPoints[i].y);
+                    const p2 = toPixels(pathPoints[i + 1].x, pathPoints[i + 1].y);
+                    ctx.beginPath();
+                    ctx.moveTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
+                    ctx.stroke();
+                }
+
+                ctx.globalAlpha = 1.0;
+                ctx.lineWidth = 1;
+
+                // Draw robot position
                 const ppx = toPixels(pos.x, pos.y);
-                ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(ppx.x, ppx.y, 8, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = '#ef4444'; 
+                ctx.beginPath(); 
+                ctx.arc(ppx.x, ppx.y, 8, 0, Math.PI*2); 
+                ctx.fill();
+                
+                // Draw robot heading
                 const hRad = degToRad(heading);
-                ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
-                ctx.beginPath(); ctx.moveTo(ppx.x, ppx.y); ctx.lineTo(ppx.x + Math.cos(hRad) * 18, ppx.y - Math.sin(hRad) * 18); ctx.stroke();
+                ctx.strokeStyle = '#ffffff'; 
+                ctx.lineWidth = 2;
+                ctx.beginPath(); 
+                ctx.moveTo(ppx.x, ppx.y); 
+                ctx.lineTo(ppx.x + Math.cos(hRad) * 18, ppx.y - Math.sin(hRad) * 18); 
+                ctx.stroke();
                 ctx.lineWidth = 1;
 
                 if (seg >= points.length-1) { isSimulating = false; return; }
