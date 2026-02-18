@@ -1,0 +1,344 @@
+body {
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #121212;
+    color: white;
+    margin: 0;
+    padding: 20px;
+}
+
+canvas {
+    background-color: #2d2d2e;
+    background-image: url('field.png');
+    background-position: center;
+    background-size: cover;
+    border: 4px solid #3d3d3e;
+    cursor: crosshair;
+    border-radius: 8px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 900px;
+    background: #1c1c1e;
+    padding: 12px 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+.title {
+    margin: 0;
+    font-size: 18px;
+}
+
+.canvas-container {
+    position: relative;
+    background: #1c1c1e;
+    padding: 10px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+.controls {
+    margin: 20px auto;
+    padding: 20px;
+    background: #1c1c1e;
+    border-radius: 12px;
+    width: 900px;
+}
+
+textarea {
+    width: 100%;
+    height: 200px;
+    font-family: 'Consolas', monospace;
+    margin-top: 10px;
+    border: 1px solid #444;
+    background: #1a1a1b;
+    color: #10b981;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+.toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+button {
+    padding: 8px 16px;
+    font-weight: bold;
+    cursor: pointer;
+    border: none;
+    border-radius: 6px;
+    transition: background 0.2s;
+}
+
+button:hover {
+    filter: brightness(1.1);
+}
+
+.btn-clear {
+    background: #ef4444;
+    color: white;
+}
+
+.btn-undo {
+    background: #6366f1;
+    color: white;
+}
+
+.btn-delete {
+    background: #f97316;
+    color: white;
+}
+
+.btn-simulate {
+    background: #8b5cf6;
+    color: white;
+}
+
+.btn-copy {
+    background: #10b981;
+    color: white;
+}
+
+.mode-btn {
+    padding: 8px 12px;
+}
+
+input[type=range] {
+    vertical-align: middle;
+}
+
+.code-output {
+    margin-top: 10px;
+    text-align: center;
+    padding: 0 10px;
+}
+
+pre#output {
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    background: #1a1a1b;
+    color: #10b981;
+    padding: 10px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    overflow-x: auto;
+    max-height: 200px;
+}
+
+/* override highlight.js styles */
+.hljs-number {
+    color: #f59e0b;
+}
+
+.hljs-built_in,
+.hljs-keyword {
+    color: #3b82f6;
+}
+
+.hljs-comment {
+    color: #6b7280;
+    font-style: italic;
+}
+
+.segment-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: #1a1a1b;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    flex-wrap: wrap;
+}
+
+.segment-controls label {
+    font-size: 12px;
+    color: #cbd5e1;
+}
+
+.segment-controls select,
+.segment-controls input {
+    padding: 6px;
+    border-radius: 4px;
+    border: 1px solid #444;
+    background: #0f172a;
+    color: #fff;
+    font-size: 12px;
+}
+
+.legend {
+    font-size: 12px;
+    color: #94a3b8;
+    background: #1c1c1e;
+    padding: 4px 8px;
+    border-radius: 4px;
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    display: flex;
+    gap: 12px;
+}
+
+.footer {
+    margin-top: 30px;
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.legend span {
+    margin-right: 20px;
+}
+
+.mode-selector {
+    display: flex;
+    gap: 8px;
+}
+
+.mode-btn {
+    padding: 10px 15px;
+    background: #4f46e5;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.mode-btn.active {
+    background: #10b981;
+}
+
+.decoder-section {
+    display: none;
+    background: #1a1a1b;
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    margin: 0 auto 10px auto;
+    max-width: 900px;
+}
+
+.decoder-section label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 14px;
+    color: #cbd5e1;
+}
+
+.decoder-section button {
+    width: 100%;
+    padding: 10px;
+    margin-top: 8px;
+}
+
+.decoder-section.show {
+    display: block;
+}
+
+.decoder-input {
+    width: 100%;
+    padding: 8px;
+    margin: 8px 0;
+    border: 1px solid #444;
+    background: #0f172a;
+    color: #fff;
+    border-radius: 4px;
+    font-family: monospace;
+    box-sizing: border-box;
+}
+/* ========================================
+   GitHub Dark Code Theme
+   ======================================== */
+
+.github-code-block {
+    background: #0d1117 !important;
+    border: 1px solid #30363d !important;
+    border-radius: 6px !important;
+    padding: 16px !important;
+    margin: 0 !important;
+    color: #c9d1d9 !important;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Courier New', monospace;
+    line-height: 1.6;
+    letter-spacing: 0.5px;
+    overflow-x: auto;
+    font-weight: 500;
+}
+
+.github-code-block code {
+    color: #c9d1d9;
+    font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Courier New', monospace;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+/* GitHub Syntax Highlighting for Java (highlight.js override) */
+.github-code-block .hljs-string,
+.github-code-block .hljs-literal {
+    color: #a5d6ff;
+}
+
+.github-code-block .hljs-number {
+    color: #79c0ff;
+}
+
+.github-code-block .hljs-built_in,
+.github-code-block .hljs-keyword {
+    color: #ff7b72;
+}
+
+.github-code-block .hljs-type {
+    color: #79c0ff;
+}
+
+.github-code-block .hljs-attr,
+.github-code-block .hljs-variable {
+    color: #d2a8ff;
+}
+
+.github-code-block .hljs-comment {
+    color: #7d8590;
+    font-style: italic;
+}
+
+.github-code-block .hljs-title,
+.github-code-block .hljs-class {
+    color: #f0883e;
+}
+
+.github-code-block .hljs-function {
+    color: #d2a8ff;
+}
+
+.github-code-block .hljs-name {
+    color: #1f6feb;
+}
+
+.github-code-block .hljs-params {
+    color: #c9d1d9;
+}
+
+.github-code-block .hljs-punctuation {
+    color: #c9d1d9;
+}
+
+/* Make the pre#output element use GitHub theme */
+pre#output.github-code-block {
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    max-height: 400px;
+    max-width: 900px;
+    font-family: 'JetBrains Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Courier New', monospace;
+}
